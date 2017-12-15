@@ -1,0 +1,366 @@
+---
+title: "Final Data Management Project"
+author: "Christina Chang"
+date: "12/15/2017"
+output: html_document
+---
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(error = FALSE, warning = FALSE, cache = TRUE, message=FALSE)
+```
+
+# 1. Data Preparation
+
+## Load Packages
+```{r results='hide', message=FALSE, warning=FALSE}
+
+# read data
+library(foreign)
+library(readr)
+
+# clean & manipulate data
+library(tidyverse)
+library(dplyr)
+library(reshape2)
+
+# plots
+library(ggplot2)
+
+# time series
+library(tseries)
+library(dynlm)
+library(urca)
+
+# forecast
+library(forecast)
+library(scales)
+
+# knit
+library(knitr)
+library(rvest)
+
+# interactive
+library(plotly)
+```
+
+## Import Data
+By visual inspection of the file, we don't want R to read the first two rows. 
+NA argument to specify that any blanks ("") or asterisks (“*”) would be considered missing data. 
+Note: the asterisks are specified to be redacted information, based on the UNHCR website.
+
+```{r results='hide', message=FALSE, warning=FALSE}
+setwd("/Users/Berlin/Desktop/HertieDataScience/final project")
+
+d1 <- read_csv("unhcr_popstats_people of concern.csv", skip = 2, na = c("","*"))
+d2 <- read_csv("unhcr_popstats_refugee status.csv", skip = 2, na = c("", "*"))
+
+View(d1)
+View(d2)
+```
+
+## Tidy Data
+The UNHCR data is an unbalanced panel dataset. After tidying the data, we have created a balanced panel dataset with all entities (countries) observed in all years (from 2000 to 2016). 
+
+Steps to clean and manipulate data:
+
+```{r results='hide', message=FALSE, warning=FALSE}
+
+str(d1)
+# Year correctly structured as integer
+# Country destination and origin correctly structured as character
+# All other variables should be numeric 
+
+d1[4:11] <- lapply(d1[4:11], as.numeric)
+
+summary(d1) # years from 1951 to 2016
+
+str(d2)
+# Year correctly structured as integer
+# Country destination and origin correctly structured as character
+# Do not need RSD procedure type information
+# All other variables should be numeric 
+
+d2[4] <- NULL
+
+d2[4:13] <- lapply(d2[4:13], as.numeric)
+
+summary(d2) # years from 2000 to 2016
+
+df <- merge(d1, d2, by = c("Year", "Country / territory of asylum/residence", "Origin"))
+
+View(df)
+str(df)
+summary(df) # after merge, data before the year 2000 drops out.
+
+# identify missing data
+apply(df,2, function(x) sum(is.na(x)))
+```
+
+# 2. Exploratory Data Analysis
+
+## People of Concern:
+```{r, warning=FALSE, message=FALSE}
+
+# subset for only PoC category counts by year
+
+PoC_count <- df[c(1,4:10)] 
+
+PoC_count <- melt(PoC_count, id=c("Year"))
+
+str(PoC_count)
+
+plot1 <- ggplot(PoC_count,aes(Year,value, na.rm = TRUE)) +
+  geom_bar(aes(fill=variable),stat="identity") +
+  labs(title="UNHCR Population Statistics Database",
+       subtitle="Populations of Concern (2000 - 2016)",
+       x="Year", 
+       y="Number of People (Millions)")
+
+ggplotly(plot1)
+```
+
+## Percent Change in Total Population by "People of Concern"
+```{r, warning=FALSE, message=FALSE}
+Year_Pop <- aggregate(df$`Total Population`, by=list(Year = df$Year), FUN=sum, na.rm = TRUE)
+
+Year_Pop$rate <- NA
+
+Year_Pop$rate[which(Year_Pop$Year>2000)] = 100*(diff(Year_Pop$x)/Year_Pop[-nrow(Year_Pop),]$x)
+
+View(Year_Pop)
+
+plot2 <- ggplot(Year_Pop, aes(x= Year, y= rate)) + geom_line() + 
+  labs(title="Percent Change in People of Concern",
+       subtitle="(2000 - 2016)",
+       x="Year", 
+       y="Percent Change")
+
+ggplotly(plot2)
+```
+
+## Top Countries of Destination
+```{r, warning=FALSE, message=FALSE}
+destination_country_total <- df %>%
+  group_by(`Country / territory of asylum/residence`, Year) %>%
+  summarise(Total = sum(`Total Population`))
+
+View(destination_country_total)
+
+top_destcountries <- destination_country_total %>%
+  group_by(`Country / territory of asylum/residence`) %>%
+  summarise(Total = sum(Total, na.rm = TRUE)) %>%
+  top_n(20)
+
+View(top_destcountries)
+
+top_destcountries2 <- as.character(top_destcountries$`Country / territory of asylum/residence`)
+
+plot3 <- destination_country_total %>%
+  filter(`Country / territory of asylum/residence` %in% top_destcountries2) %>%
+  ggplot(mapping = aes(x = Year, y = Total)) +
+  geom_line() + coord_cartesian(ylim = c(0, 3e6)) +
+  facet_wrap(~`Country / territory of asylum/residence`, ncol=4)
+
+ggplotly(plot3)
+```
+
+## Top Countries of Origin
+```{r, warning=FALSE, message=FALSE}
+origin_country_total <- df %>%
+  group_by(Origin, Year) %>%
+  summarise(Total = sum(`Total Population`))
+
+top_origcountries <- origin_country_total %>%
+  group_by(Origin) %>%
+  summarise(Total = sum(Total, na.rm = TRUE)) %>%
+  top_n(20)
+
+top_origcountries2 <- as.character(top_origcountries$Origin)
+
+plot4 <- origin_country_total %>%
+  filter(Origin %in% top_origcountries2) %>%
+  ggplot(mapping = aes(x = Year, y = Total)) +
+  geom_line() + coord_cartesian(ylim = c(0, 1e7)) +
+  facet_wrap( ~ Origin, ncol=4)
+
+ggplotly(plot4)
+```
+
+# 3. Time Series Analysis
+We run a time-series analysis to see if the total number of "Persons of Concern" (POC) in world  effects the total number of POCs in Germany over time. 
+y = Total PoC in Germany; x = Total PoC in the world; t = Years (2000 to 2016)
+
+## Prepare data for Time Series analysis
+```{r, warning=FALSE, message=FALSE}
+# create new dataframe
+Germany_Poc <- df %>% group_by(`Country / territory of asylum/residence`, Year) %>% 
+  filter('Germany'  %in% `Country / territory of asylum/residence`) %>% 
+  summarise(German_Total = sum(`Total Population`, na.rm = TRUE))
+
+View(Germany_Poc)
+
+df_ts <- merge(Germany_Poc, Year_Pop, by = "Year")
+  
+View(df_ts)
+
+# declare variables to be time series using ts()
+df_ts$Year <- ts(df_ts$Year)
+df_ts$German_Total<- ts(df_ts$German_Total)
+df_ts$x <- ts(df_ts$x)
+
+# run preliminary OLS model
+summary(m1 <- dynlm(German_Total ~ x, data = df_ts))
+```
+
+Results of OLS model (m1): Positive and substantially small coefficient, but not statistically significant. 
+
+### Can only use OLS regression with time series data if the following two conditions are met: 
+
+## (a) Weak Dependence / Weak Persistence
+```{r, warning=FALSE, message=FALSE}
+summary(dynlm(German_Total ~ L(German_Total, 1), data = df_ts))
+# The rho is less than 1, so stability condition is met
+
+acf(df_ts$German_Total, na.action = na.pass, lag.max = 5)
+# Correlation coefficient is statistically insignificant after 1 lag, so it is not persistent
+```
+Conclusion: The data is weakly dependent allowing for a dynamically complete model. 
+
+## (b) Stationarity
+```{r, warning=FALSE, message=FALSE}
+# Unit Root - Dickey Fuller Test 
+adf.test(df_ts$German_Total)
+# p-value is less than .05, so it has no unit root
+
+# Trends
+par(mfrow = c(1, 2))
+plot(df_ts$German_Total) #Total POCs in Germany
+plot(df_ts$x) #Total POCs in the world
+```
+
+Conclusions: Total POCs in Germany looks like a stochastic (inconsistent) trend. Total POCs in the world looks like a deterministic trend. That is, it is non-stationary.
+
+### Need to account for this trend in total POCs in the world before running an OLS regression.
+
+## Method 1: First Differencing
+```{r, warning=FALSE, message=FALSE}
+df_ts$d.German_Total <- c(NA, diff(df_ts$German_Total))
+df_ts$d.x <- c(NA, diff(df_ts$x))
+
+par(mfrow = c(1, 2))
+plot(df_ts$d.German_Total)
+plot(df_ts$d.x)
+
+summary(m2 <- dynlm(d.German_Total ~ d.x, data = df_ts))
+```
+
+Results of OLS model (m2): Positive and substantially small coefficient, but not statistically significant. 
+
+The problem with first differencing is that we lose statistical power as we lose observations. 
+
+## Method 2: Detrending
+```{r, warning=FALSE, message=FALSE}
+fit1 <- lm(German_Total ~ Year, df_ts)
+df_ts$resid.German_Total <- residuals(fit1)
+
+fit2 <- lm(x ~ Year, df_ts)
+df_ts$resid.x <- residuals(fit2)
+
+summary(m3 <- dynlm(resid.German_Total ~ resid.x, data = df_ts))
+```
+
+Results of OLS model (m3): Positive and substantially small coefficient, but not statistically significant
+
+So even after detrending, there is no statistically significant coefficient to show a causal effect between the total POC in the world and the total POCs in Germany over time.
+
+# 4. Forecasting
+As we have monthly data on asylum-seekers in Germany, we can use it to predict future numbers of asylum-seekers using a forecasting model. 
+
+## Import Data
+By visual inspection of the file, we don't want R to read the first two rows. 
+```{r results='hide', message=FALSE, warning=FALSE}
+df3 <- read_csv("unhcr_popstats_export_asylum_seekers_monthly_2017_12_04_203715.csv", skip = 2)
+
+View(df3)
+str(df3)
+summary(df3)
+```
+
+## Tidy Data
+In the forecasting model, NA values returns errors. 
+As such, we specify that any NA values are assigned a value of 0. 
+```{r results='hide', message=FALSE, warning=FALSE}
+df3[5] <- lapply(df3[5], as.numeric)
+
+apply(df3,2, function(x) sum(is.na(x)))
+
+df3$Value[is.na(df3$Value)] <- 0
+```
+
+## Declare variables as time series
+```{r}
+Germany_Total.Monthly <- df3 %>%
+  group_by(`Country / territory of asylum/residence`, Year, Month) %>%
+  summarise(Total = sum(Value))
+
+Germany_monthly <- ts(Germany_Total.Monthly$Total, 
+                      start = c(1999, 1), frequency = 12)
+```
+
+## Test for weak dependence (weak persistence): 
+```{r}
+summary(dynlm(Germany_monthly ~ L(Germany_monthly, 1)))
+# The rho is less than 1, so stability condition is met
+
+acf(Germany_monthly, na.action = na.pass, lag.max = 40)
+# Correlation coefficient is statistically insignificant after 2.5 lag, so it is not persistent
+```
+
+## Test for stationarity
+```{r}
+# Unit Root - Dickey Fuller Test 
+adf.test(Germany_monthly)
+# p value is less than .05, there is no unit root.
+
+# Trends
+autoplot(as.zoo(Germany_monthly), geom = "line")
+# For forecasting, just observe the trend. 
+# Clear spike since 2015 that seems to have dropped off in 2016. 
+```
+
+## Decompose
+Decompose the additives of time series. This returns estimates of the seasonal component, trend component and irregular components ("random" components).
+```{r}
+plot(decompose(Germany_monthly))
+```
+
+## Seasonal Changes
+Look more closely at the seasonal changes in the number of asylum seekers. 
+```{r, results='hide'}
+stl(Germany_monthly, s.window="periodic")
+# Germany has had a positive net flow of asylum seekers in February, June, July, November and December.
+```
+
+### We attempt two methods for forecasting future monthly flows of asylum seekers for 2018 and 2019 in Germany. 
+
+## Method 1: ARIMA Forecasting
+```{r}
+plot(forecast(auto.arima(Germany_monthly), 30), 
+     main = "ARIMA Forecast: Germany Asylum Seeker Arrivals", 
+     ylab = "Number of Asylum Seekers", 
+     xlab = "Year", ylim=c(0, 90000))
+# The wide confidence intervals show the uncertainty in forecasting with the dark grey representing 95 percent confidence and the light grey representing 80 percent confidence. 
+
+# ARIMA forecast values:
+forecast(auto.arima(Germany_monthly), 24)
+```
+
+## Method 2: TBATS Forecasting
+```{r}
+plot(forecast(tbats(Germany_monthly), 30), 
+     main = "TBATS Forecast: Germany Asylum Seeker Arrivals", 
+     ylab = "Number of Asylum Seekers", 
+     xlab = "Year", ylim=c(0, 90000))
+
+#TBATS forecast values:
+forecast(tbats(Germany_monthly), 24)
+```
