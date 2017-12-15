@@ -54,11 +54,11 @@ d2[4:13] <- lapply(d2[4:13], as.numeric)
 
 df <- merge(d1, d2, by = c("Year", "Country / territory of asylum/residence", "Origin"))
 
-POC_df <- ddply(df, .(Year), summarize, year_mean_Refugees = mean(`Total Population`, na.rm = TRUE))
+POC_df <- ddply(df, .(Year), summarize, year_sum_Refugees = sum(`Total Population`, na.rm = TRUE))
 
-Refugees_df <- ddply(df, .(Year), summarize, year_mean_Refugees = mean(`Refugees (incl. refugee-like situations)`, na.rm = TRUE))
+Refugees_df <- ddply(df, .(Year), summarize, year_sum_Refugees = sum(`Refugees (incl. refugee-like situations)`, na.rm = TRUE))
 
-Returned_Refugees_df <- ddply(df, .(Year), summarize, year_mean_Returned.Refugees = mean(`Returned refugees`, na.rm = TRUE))
+Returned_Refugees_df <- ddply(df, .(Year), summarize, year_sum_Returned.Refugees = sum(`Returned refugees`, na.rm = TRUE))
 ```
 
 by People
@@ -66,25 +66,25 @@ by People
 Row
 -----------------------------------------------------------------------
 
-### People of Concern Per Year
+### Average # of People of Concern per Year
 
 ```{r}
-POC <- round(mean(POC_df$year_mean_Refugees), digits = 0)
+POC <- round(mean(POC_df$year_sum_Refugees), digits = 0)
 valueBox(POC, icon = "fa-user-o")
 ```
 
-### Refugees per Year 
+### Average # of Refugees per Year
 
 ```{r}
-Refugees <- mean(Refugees_df$year_mean_Refugees)
-gauge(Refugees, min = 0, max = 2690)
+Refugees <- round(mean(Refugees_df$year_sum_Refugees), digits = 0)
+gauge(Refugees, min = 0, max = 18500000)
 ```
 
-### Returned Refugees per Year
+### Average # of Returned Refugees per Year
 
 ```{r}
-Returned_Refugees <- mean(Returned_Refugees_df$year_mean_Returned.Refugees)
-gauge(Returned_Refugees, min = 0, max = 2491)
+Returned_Refugees <- round(mean(Returned_Refugees_df$year_sum_Returned.Refugees), digits = 0)
+gauge(Returned_Refugees, min = 0, max = 14600000)
 ```
 
 Row {.tabset .tabset-fade}
