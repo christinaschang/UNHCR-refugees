@@ -69,7 +69,7 @@ Row
 ### Average # of People of Concern per Year
 
 ```{r}
-POC <- round(mean(POC_df$year_sum_Refugees), digits = 0)
+POC <- format(round(mean(POC_df$year_sum_Refugees), digits = 0), 1e6, big.mark=",", scientific=FALSE)
 valueBox(POC, icon = "fa-user-o")
 ```
 
