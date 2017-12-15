@@ -1,0 +1,244 @@
+---
+title: "UNHCR Populations Statistics (2000-2016)"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: row
+    vertical_layout: fill
+---
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(error = FALSE, warning = FALSE, cache = TRUE, message=FALSE)
+
+# read data
+library(foreign)
+library(readr)
+
+# clean & manipulate data
+library(tidyverse)
+library(dplyr)
+library(reshape2)
+
+# plots
+library(ggplot2)
+
+# time series
+library(tseries)
+library(dynlm)
+library(urca)
+library(plyr)
+
+# forecast
+library(forecast)
+library(scales)
+
+# knit
+library(knitr)
+library(rvest)
+
+# interactive
+library(plotly)
+library(flexdashboard)
+
+setwd("/Users/Berlin/Desktop/HertieDataScience/final project")
+
+d1 <- read_csv("unhcr_popstats_people of concern.csv", skip = 2, na = c("","*"))
+d2 <- read_csv("unhcr_popstats_refugee status.csv", skip = 2, na = c("", "*"))
+
+View(d1)
+View(d2)
+
+d1[4:11] <- lapply(d1[4:11], as.numeric)
+
+d2[4] <- NULL
+
+d2[4:13] <- lapply(d2[4:13], as.numeric)
+
+df <- merge(d1, d2, by = c("Year", "Country / territory of asylum/residence", "Origin"))
+
+POC_df <- ddply(df, .(Year), summarize, year_mean_Refugees = mean(`Total Population`, na.rm = TRUE))
+
+Refugees_df <- ddply(df, .(Year), summarize, year_mean_Refugees = mean(`Refugees (incl. refugee-like situations)`, na.rm = TRUE))
+
+Returned_Refugees_df <- ddply(df, .(Year), summarize, year_mean_Returned.Refugees = mean(`Returned refugees`, na.rm = TRUE))
+```
+
+by People
+=====================================     
+Row
+-----------------------------------------------------------------------
+
+### People of Concern Per Year
+
+```{r}
+POC <- round(mean(POC_df$year_mean_Refugees), digits = 0)
+valueBox(POC, icon = "fa-user-o")
+```
+
+### Refugees per Year 
+
+```{r}
+Refugees <- mean(Refugees_df$year_mean_Refugees)
+gauge(Refugees, min = 0, max = 2690)
+```
+
+### Returned Refugees per Year
+
+```{r}
+Returned_Refugees <- mean(Returned_Refugees_df$year_mean_Returned.Refugees)
+gauge(Returned_Refugees, min = 0, max = 2491)
+```
+
+Row {.tabset .tabset-fade}
+-----------------------------------------------------------------------
+
+### Populations of Concern (POC)
+
+```{r}
+PoC_count <- df[c(1,4:10)] 
+
+PoC_count <- melt(PoC_count, id=c("Year"))
+
+plot1 <- ggplot(PoC_count,aes(Year,value, na.rm = TRUE)) +
+  geom_bar(aes(fill=variable),stat="identity") +
+  labs(main = "Populations of Concern",
+       x="Year", 
+       y="Number of People (Millions)")
+
+ggplotly(plot1)
+```
+
+### Percent Change in POC Populations
+
+```{r}
+Year_Pop <- aggregate(df$`Total Population`, by=list(Year = df$Year), FUN=sum, na.rm = TRUE)
+
+Year_Pop$rate <- NA
+
+Year_Pop$rate[which(Year_Pop$Year>2000)] = 100*(diff(Year_Pop$x)/Year_Pop[-nrow(Year_Pop),]$x)
+
+plot2 <- ggplot(Year_Pop, aes(x= Year, y= rate)) + geom_line() + 
+  labs(main = "Percent Change in POC Populations",
+       x="Year", 
+       y="Percent Change")
+
+ggplotly(plot2)
+```
+
+by Country
+=====================================  
+
+Row {.tabset .tabset-fade}
+-----------------------------------------------------------------------
+
+### Top Countries of Destination
+
+```{r}
+destination_country_total <- df %>%
+  group_by(`Country / territory of asylum/residence`, Year) %>%
+  summarise(Total = sum(`Total Population`))
+
+top_destcountries <- destination_country_total %>%
+  group_by(`Country / territory of asylum/residence`) %>%
+  summarise(Total = sum(Total, na.rm = TRUE)) %>%
+  top_n(20)
+
+top_destcountries2 <- as.character(top_destcountries$`Country / territory of asylum/residence`)
+
+plot3 <- destination_country_total %>%
+  filter(`Country / territory of asylum/residence` %in% top_destcountries2) %>%
+  ggplot(mapping = aes(x = Year, y = Total)) +
+  geom_line() + coord_cartesian(ylim = c(0, 3e6)) +
+  facet_wrap(~`Country / territory of asylum/residence`, ncol=4)
+
+ggplotly(plot3)
+```
+
+### Top Countries of Origin
+```{r}
+origin_country_total <- df %>%
+  group_by(Origin, Year) %>%
+  summarise(Total = sum(`Total Population`))
+
+top_origcountries <- origin_country_total %>%
+  group_by(Origin) %>%
+  summarise(Total = sum(Total, na.rm = TRUE)) %>%
+  top_n(20)
+
+top_origcountries2 <- as.character(top_origcountries$Origin)
+
+plot4 <- origin_country_total %>%
+  filter(Origin %in% top_origcountries2) %>%
+  ggplot(mapping = aes(x = Year, y = Total)) +
+  geom_line() + coord_cartesian(ylim = c(0, 1e7)) +
+  facet_wrap( ~ Origin, ncol=4)
+
+ggplotly(plot4)
+```
+
+Time Series
+=====================================  
+
+Row {.tabset .tabset-fade}
+-----------------------------------------------------------------------
+```{r}
+Germany_Poc <- df %>% group_by(`Country / territory of asylum/residence`, Year) %>% 
+  filter('Germany'  %in% `Country / territory of asylum/residence`) %>% 
+  summarise(German_Total = sum(`Total Population`, na.rm = TRUE))
+
+df_ts <- merge(Germany_Poc, Year_Pop, by = "Year")
+  
+df_ts$Year <- ts(df_ts$Year)
+df_ts$German_Total<- ts(df_ts$German_Total)
+df_ts$x <- ts(df_ts$x)
+```
+
+### Weak Dependence (Yes)
+```{r}
+acf(df_ts$German_Total, na.action = na.pass, lag.max = 5)
+```
+
+### Stationarity (No)
+```{r}
+par(mfrow = c(1, 2), main = "Time Trends in Variables")
+plot(df_ts$German_Total, ylab = "Total POCs in Germany")
+plot(df_ts$x, ylab = "Total POCs in the world")
+```
+
+Forecasting
+=====================================  
+
+Row {.tabset .tabset-fade}
+-----------------------------------------------------------------------
+```{r}
+df3 <- read_csv("unhcr_popstats_export_asylum_seekers_monthly_2017_12_04_203715.csv", skip = 2)
+df3[5] <- lapply(df3[5], as.numeric)
+df3$Value[is.na(df3$Value)] <- 0
+
+Germany_Total.Monthly <- df3 %>%
+  group_by(`Country / territory of asylum/residence`, Year, Month) %>%
+  summarise(Total = sum(Value))
+
+Germany_monthly <- ts(Germany_Total.Monthly$Total, 
+                      start = c(1999, 1), frequency = 12)
+```
+
+### Decomposition
+```{r}
+plot(decompose(Germany_monthly))
+```
+
+### ARIMA Forecasting
+```{r}
+plot(forecast(auto.arima(Germany_monthly), 30), 
+     main = "ARIMA Forecast: Germany Asylum Seeker Arrivals", 
+     ylab = "Number of Asylum Seekers", 
+     xlab = "Year", ylim=c(0, 90000))
+```
+
+### TBATS Forecasting
+```{r}
+plot(forecast(tbats(Germany_monthly), 30), 
+     main = "TBATS Forecast: Germany Asylum Seeker Arrivals", 
+     ylab = "Number of Asylum Seekers", 
+     xlab = "Year", ylim=c(0, 90000))
+```
+
